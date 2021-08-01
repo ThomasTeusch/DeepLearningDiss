@@ -1,0 +1,191 @@
+#!/bin/bash
+
+#SBATCH --partition=mpcb.p
+#SBATCH --nodes=1
+
+#------------------------------
+#SBATCH --job-name=neuro_evo_ct
+#SBATCH --time=10-00:00:00
+#SBATCH --ntasks=1
+#SBATCH --mem=10G
+#SBATCH --gres=gpu:1
+#SBATCH --output=slurm.%j.out
+#SBATCH --error=slurm.%j.out
+#SBATCH --exclude=mpcg007,mpcg008
+#------------------------------
+
+data='inputs/red_root1_shuff23.dat'
+#data='inputs/red_root0_smooth_shuff23.dat'
+module='PyTorch'
+boundary=13.0
+optimizer='lbfgs'
+lr=1.0
+gradient=False
+
+# Variables to be optimized, but hard coded in neuroevo_ct.py, therefore useless here...
+model=("mlp") # "resnetv3")
+layer=("2" "3" "4" "5")
+dim=("32" "64" "128" "256")
+act=("selu" "relu" "tanh" "celu" "rrelu" "leaky_relu" "sigmoid" "tanhshrink")
+modus=("mse" "mae")
+dropout=("0.00" "0.01" "0.05" "0.10")
+
+#--- load 
+module restore
+module load Anaconda3
+source activate pes_fit
+
+bestmodel1="1010101010"
+bestmodel2="0101010101"
+sigma=0.1
+rechenberg=0
+
+for (( i=0 ; i<100 ; i++)) ; do
+# Generate Populations
+    python3.6 neuroevo_ct.py --epoch=$i --modus="evo" --bestpop1=$bestmodel1 --bestpop2=$bestmodel2 --sigma=$sigma 
+
+    model_evo1="mlp" ; model_evo2="mlp"
+    layer_evo1=$(tail -1 tmp_pop_ct | awk '{print $2}') ; 	layer_evo2=$(tail -2 tmp_pop_ct | head -1 | awk '{print $2}')
+    dim_evo1=$(tail -1 tmp_pop_ct | awk '{print $3}') ; 	dim_evo2=$(tail -2 tmp_pop_ct | head -1 | awk '{print $3}')
+    modus_evo1=$(tail -1 tmp_pop_ct | awk '{print $5}') ; 	modus_evo2=$(tail -2 tmp_pop_ct | head -1 | awk '{print $5}') 
+    act_evo1=$(tail -1 tmp_pop_ct | awk '{print $4}') ; 	act_evo2=$(tail -2 tmp_pop_ct | head -1 | awk '{print $4}')
+    dropout_evo1=$(tail -1 tmp_pop_ct | awk '{print $6}') ; dropout_evo2=$(tail -2 tmp_pop_ct | head -1 | awk '{print $6}')
+    pop1=$(tail -1 tmp_pop_ct | awk '{print $1}') ; 	pop2=$(tail -2 tmp_pop_ct | head -1 | awk '{print $1}')
+
+# Subepoch 1
+    if [ $gradient = True ] ; then
+      if [[ $data == *'root0'* ]] ; then project="gs_${module}_${model_evo1}_grad_${boundary}eV_${modus_evo1}_${act_evo1}_${optimizer}_lr${lr}_dim${dim_evo1}_layer${layer_evo1}_drop${dropout_evo1}"
+      else project="es_${module}_${model_evo1}_grad_${boundary}eV_${modus_evo1}_${act_evo1}_${optimizer}_lr${lr}_dim${dim_evo1}_layer${layer_evo1}_drop${dropout_evo1}"
+      fi
+    else 
+      if [[ $data == *'root0'* ]] ; then project="gs_${module}_${model_evo1}_no_grad_${boundary}eV_${modus_evo1}_${act_evo1}_${optimizer}_lr${lr}_dim${dim_evo1}_layer${layer_evo1}_drop${dropout_evo1}"
+      else project="es_${module}_${model_evo1}_no_grad_${boundary}eV_${modus_evo1}_${act_evo1}_${optimizer}_lr${lr}_dim${dim_evo1}_layer${layer_evo1}_drop${dropout_evo1}"
+      fi
+    fi
+   
+    python3.6 neuroevo_ct.py --epoch=$i --modus=write_pop --actpop=$pop1
+
+# Start NN Training 
+    echo -e "Epoch: $i"  
+    echo -e "  Subepoch: 1"
+    echo -e "    Layer: $layer_evo1, Neurons: $dim_evo1, Modus: $modus_evo1, Act. Func.: $act_evo1, Dropout rate: $dropout_evo1"
+    echo -e "    Best Populations: $best_model1, $best_model2"
+    echo -e "    New Population: $pop1"
+    echo -e "    Working on project $project \n"
+    python3.6 main.py --data-dir=$data --project=$project --module=$module --model-name=$model_evo1 \
+                      --dim=$dim_evo1 --layer=$layer_evo1 --boundary=$boundary --learning=$lr --modus=$modus_evo1 \
+                      --optimizer=$optimizer --activation=$act_evo1 --dropout=$dropout_evo1 --gradient=$gradient \
+                      > output/${project}.out
+
+    ftrain_mse=$(grep "Mean squared error (train)" output/${project}.out | awk '{print $5}') ; vtraingrep=$?
+    ftrain_mae=$(grep "Mean absolute error (train)" output/${project}.out | awk '{print $5}') ; vtraingrep=$?
+    ftest_mse=$(grep "Mean squared error (test)" output/${project}.out | awk '{print $5}') ; vtestgrep=$?
+    ftest_mae=$(grep "Mean absolute error (test)" output/${project}.out | awk '{print $5}') ; vtestgrep=$?
+    ftrain=`echo "scale=9; $ftrain_mse+$ftrain_mae" | bc`
+    ftest=`echo "scale=9; $ftest_mse+$ftest_mae" | bc`
+
+    #ftrain=$(echo 0."$RANDOM")
+    #ftest=$(echo 0."$RANDOM")
+
+    python3.6 neuroevo_ct.py --epoch=$i --modus=write_fit --fittrain=$ftrain --fittest=$ftest
+
+# Subepoch 2
+    if [ $gradient = True ] ; then
+      if [[ $data == *'root0'* ]] ; then project="gs_${module}_${model_evo2}_grad_${boundary}eV_${modus_evo2}_${act_evo2}_${optimizer}_lr${lr}_dim${dim_evo2}_layer${layer_evo2}_drop${dropout_evo2}"
+      else project="es_${module}_${model_evo2}_grad_${boundary}eV_${modus_evo2}_${act_evo2}_${optimizer}_lr${lr}_dim${dim_evo2}_layer${layer_evo2}_drop${dropout_evo2}"
+      fi
+    else
+      if [[ $data == *'root0'* ]] ; then project="gs_${module}_${model_evo2}_no_grad_${boundary}eV_${modus_evo2}_${act_evo2}_${optimizer}_lr${lr}_dim${dim_evo2}_layer${layer_evo2}_drop${dropout_evo2}"
+      else  project="es_${module}_${model_evo2}_no_grad_${boundary}eV_${modus_evo2}_${act_evo2}_${optimizer}_lr${lr}_dim${dim_evo2}_layer${layer_evo2}_drop${dropout_evo2}"
+      fi
+    fi
+
+    python3.6 neuroevo_ct.py --epoch=$i --modus=write_pop --actpop=$pop2
+
+# Start NN Training
+    echo -e "  Subepoch: 2"
+    echo -e "    Layer: $layer_evo2, Neurons: $dim_evo2, Modus: $modus_evo2, Act. Func.: $act_evo2, Dropout rate: $dropout_evo2"
+    echo -e "    Best Populations: $best_model1, $best_model2" 
+    echo -e "    New Population: $pop2"
+    echo -e "    Working on project $project \n"
+    python3.6 main.py --data-dir=$data --project=$project --module=$module --model-name=$model_evo2 \
+                      --dim=$dim_evo2 --layer=$layer_evo2 --boundary=$boundary --learning=$lr --modus=$modus_evo2 \
+                      --optimizer=$optimizer --activation=$act_evo2 --dropout=$dropout_evo2 --gradient=$gradient \
+                      > output/${project}.out
+
+    ftrain_mse=$(grep "Mean squared error (train)" output/${project}.out | awk '{print $5}') ; vtraingrep=$?
+    ftrain_mae=$(grep "Mean absolute error (train)" output/${project}.out | awk '{print $5}') ; vtraingrep=$?
+    ftest_mse=$(grep "Mean squared error (test)" output/${project}.out | awk '{print $5}') ; vtestgrep=$?
+    ftest_mae=$(grep "Mean absolute error (test)" output/${project}.out | awk '{print $5}') ; vtestgrep=$?
+    ftrain=`echo "scale=9; $ftrain_mse+$ftrain_mae" | bc`
+    ftest=`echo "scale=9; $ftest_mse+$ftest_mae" | bc`
+    
+    #ftrain=$(echo 0."$RANDOM")
+    #ftest=$(echo 0."$RANDOM")
+
+    python3.6 neuroevo_ct.py --epoch=$i --modus=write_fit --fittrain=$ftrain --fittest=$ftest
+ 
+    pre_bestmodel=$best_model1
+    best_model1=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -1 | awk '{print $1}')
+    best_model2=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -2 | head -1 | awk '{print $1}')
+
+
+## Rechenberg 1/5 rule
+    if [ "$pre_bestmodel" != "$best_model1" ] ; then rechenberg=$[rechenberg+1] ; fi
+
+    if [ `expr $i % 5` -eq 0 ] && [ $i -gt 0 ] ; then
+        echo -e "Update sigma rate"
+        if [ $rechenberg -gt 1 ] ; then 
+            sigma_test=`echo "scale=5; $sigma*2" | bc`
+	    if (( $(echo "$sigma_test < 0.8" |bc -l) )); then sigma=$sigma_test ; echo -e "sigma = sigma*2: $sigma"
+            else echo -e "Sigma would be to high! Keep sigma constant: $sigma"
+            fi
+        elif [ $rechenberg -lt 1 ] ; then
+            sigma_test=`echo "scale=5; $sigma/2" | bc`
+	    if (( $(echo "$sigma_test > 0.01" |bc -l) )); then sigma=$sigma_test ; echo -e "sigma = sigma*0.5: $sigma"
+            else echo -e "Sigma would be to low! Keep sigma constant: $sigma"
+            fi
+        else echo -e "Keep sigma constant: $sigma" 
+        fi
+        rechenberg=0
+    fi
+
+    echo
+done
+
+
+best_model=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -1 | awk '{print $1}')
+layer_evo=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -1 | awk '{print $2}')
+dim_evo=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -1 | awk '{print $3}')
+modus_evo=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -1 | awk '{print $5}')
+act_evo=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -1 | awk '{print $4}')
+dropout_evo=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -1 | awk '{print $6}')
+best_train=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -1 | awk '{print $7}')
+best_test=$(sort -k8 -k7 -gr results_neuroevo_ct.out | tail -1 | awk '{print $8}')
+uniq_pop=$(sort -k1 results_neuroevo_ct.out | awk '{print $1}' | uniq | wc -l)
+total_pop=$(sort -k1 results_neuroevo_ct.out | awk '{print $1}' | wc -l)
+
+if [ "$uniq_pop" -eq "$total_pop" ]; then
+    echo "Check successful"
+else
+    echo "Failure in populations!"
+fi
+
+echo >> results_neuroevo_ct.out
+echo >> results_neuroevo_ct.out
+echo "----------------------------------------" >> results_neuroevo_ct.out
+echo "Best model: $best_model" >> results_neuroevo_ct.out
+echo "Layer: $layer_evo, Neurons: $dim_evo" >> results_neuroevo_ct.out
+echo "Modus: $modus_evo, Act. Func.: $act_evo" >> results_neuroevo_ct.out
+echo "Dropout rate: $dropout_evo" >> results_neuroevo_ct.out
+echo "Training error: $best_train" >> results_neuroevo_ct.out
+echo "Test error: $best_test" >> results_neuroevo_ct.out
+echo "----------------------------------------" >> results_neuroevo_ct.out
+echo >> results_neuroevo_ct.out
+echo >> results_neuroevo_ct.out
+
+
+source deactivate pes_fit
+
+module restore
+
